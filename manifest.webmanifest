@@ -1,0 +1,16 @@
+{
+  "name": "TalkStep 영어회화",
+  "short_name": "TalkStep",
+  "description": "생활·비즈니스·여행 영어회화를 실제 대화처럼 연습하고 한국어로 교정받는 앱",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#F4F6FA",
+  "theme_color": "#2F5BEA",
+  "lang": "ko",
+  "icons": [
+    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}
