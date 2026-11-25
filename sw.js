@@ -1,6 +1,6 @@
 // 오프라인에서도 앱이 열리도록 파일을 저장해 두는 코드 (수정할 필요 없음)
 // 내용을 고친 뒤에는 아래 버전 숫자를 하나 올려 주세요. 예) v1 → v2
-const CACHE = "talkstep-v6";
+const CACHE = "talkstep-v7";
 const FILES = ["./", "./index.html", "./manifest.webmanifest", "./icon-192.png", "./icon-512.png", "./apple-touch-icon.png", "./privacy.html"];
 self.addEventListener("install", e => { e.waitUntil(caches.open(CACHE).then(c => c.addAll(FILES))); self.skipWaiting(); });
 self.addEventListener("activate", e => {

@@ -592,13 +592,21 @@ function micError(code){
   }[code];
   if (m) toast(m); else if (!["stopped","viewer_stopped","hidden","aborted","dismissed"].includes(code)) toast("음성을 알아듣지 못했어요. 다시 말해 주세요.");
 }
+let micFails = 0;
+// 마이크가 반응하지 않았을 때: 안내 + 대화 화면이면 다른 방법(키보드 받아쓰기·모범답안·건너뛰기) 안내줄을 보여 줌
+function micHang(){
+  micFails++;
+  toast("마이크가 반응하지 않았어요. 한 번 더 눌러 보거나, 입력칸을 누르고 키보드의 🎤(받아쓰기)로 말해 주세요.", 5000);
+  const h = document.getElementById("michelp"); if (h) h.hidden = false;
+}
+function resetListening(){ if (listening){ try { (listening.quiet || listening.stop)(); } catch(e){} } listening = null; document.querySelectorAll(".mic.on,.pmic.on").forEach(b => b.classList.remove("on")); }
 // opts: onText(text) 실시간, onDone(text, alternatives[]) 끝났을 때, autoStop(true면 말이 끝나면 자동 종료)
 function listen(btn, opts){
   if (listening){ listening.stop(); return; }
   try { if (V.tts) V.tts.stop().catch(()=>{}); speechSynthesis.cancel(); } catch(e){}
   const onText = opts.onText || (()=>{}), onDone = opts.onDone || (()=>{});
-  let ended = false;
-  const finish = (text, alts) => { if (ended) return; ended = true; btn.classList.remove("on"); listening = null; onDone(text.trim(), alts.map(a=>a.trim()).filter(Boolean)); };
+  let ended = false, silent = false; const myId = {};
+  const finish = (text, alts) => { if (ended) return; ended = true; btn.classList.remove("on"); if (!listening || listening.id === myId) listening = null; if (silent) return; onDone(text.trim(), alts.map(a=>a.trim()).filter(Boolean)); };
   const NS = nativeSpeech();
   if (NS){   // 아이폰 앱: Apple 음성 인식 사용
     let text = "", alts = [], timer = null, hard = null, guard = null; const hs = [];
@@ -608,7 +616,7 @@ function listen(btn, opts){
       if (opts.autoStop){ clearTimeout(timer); timer = setTimeout(stopNow, 1500); } }));
     hs.push(NS.addListener("end", d => { if (d && d.error && !text) micError("no-speech"); done(); }));
     btn.classList.add("on");
-    listening = {stop: stopNow};
+    listening = {id: myId, stop: stopNow};
     hard = setTimeout(stopNow, 20000);
     NS.start().catch(e => { micError((e && e.code) || "upstream_error"); done(); });
     return;
@@ -621,7 +629,7 @@ function listen(btn, opts){
       if (opts.autoStop){ clearTimeout(timer); timer = setTimeout(() => d.stop().catch(()=>{}), 1300); } }));
     unsubs.push(d.onState(({state, reason}) => { if (state === "idle"){ if (reason) micError(reason); done(); } }));
     btn.classList.add("on");
-    listening = {stop: () => d.stop().catch(()=>{})};
+    listening = {id: myId, stop: () => d.stop().catch(()=>{})};
     d.start(V.dictNoLang ? undefined : {language:"en"}).catch(e => {
       if (e && e.code === "unavailable"){ if (!V.dictNoLang) V.dictNoLang = true; else V.dict = null; }
       if (!ended){ micError(e && e.code); done(); }
@@ -632,20 +640,28 @@ function listen(btn, opts){
   if (!SR) return toast("이 브라우저는 음성 입력을 지원하지 않아요. 크롬(PC·안드로이드)이나 사파리(아이폰)를 써 주세요.");
   try {
     const r = new SR(); r.lang = "en-US"; r.interimResults = true; r.maxAlternatives = 5; r.continuous = false;
-    let best = "", alts = [];
+    let best = "", alts = [], heard = false, errored = false, wd = null, hard = null;
+    // 아이폰 사파리는 음성 재생 직후 등에 인식이 시작된 척만 하고 onresult/onerror/onend를 하나도 보내지 않을 때가 있어요.
+    // 그러면 마이크가 계속 '듣는 중'으로 묶여 대답을 못 하므로, 일정 시간 안에 반응이 없으면 강제로 끝냅니다.
+    const clearT = () => { clearTimeout(wd); clearTimeout(hard); };
+    const force = () => { clearT(); try { r.abort(); } catch(e){}
+      if (!ended){ if (!best && !errored) micHang(); finish(best, alts.length ? alts : [best]); } };
+    wd = setTimeout(() => { if (!heard) force(); }, 7000);
+    hard = setTimeout(force, 20000);
     r.onresult = e => {
       best = Array.from(e.results).map(x => x[0].transcript).join(" ");
       const last = e.results[e.results.length-1];
       if (last.isFinal){ const head = Array.from(e.results).slice(0,-1).map(x => x[0].transcript).join(" ");
         alts = Array.from(last).map(a => (head + " " + a.transcript).trim()); }
-      onText(best.trim());
+      heard = true; onText(best.trim());
     };
-    r.onerror = e => micError(e.error);
-    r.onend = () => finish(best, alts.length ? alts : [best]);
+    r.onspeechstart = () => { heard = true; };
+    r.onerror = e => { errored = true; micError(e.error); };
+    r.onend = () => { clearT(); finish(best, alts.length ? alts : [best]); };
     btn.classList.add("on");
-    listening = {stop: () => { try { r.stop(); } catch(e){} }};
+    listening = {id: myId, stop: () => { try { r.stop(); } catch(e){} clearTimeout(wd); wd = setTimeout(force, 1500); }, quiet: () => { errored = true; silent = true; force(); }};
     r.start();
-  } catch(e){ btn.classList.remove("on"); listening = null; toast(IS_IOS && IS_STANDALONE ? IOS_HOME_MIC_MSG : "음성 입력을 시작할 수 없어요.", IS_IOS && IS_STANDALONE ? 6000 : undefined); }
+  } catch(e){ btn.classList.remove("on"); listening = null; micHang(); toast(IS_IOS && IS_STANDALONE ? IOS_HOME_MIC_MSG : "음성 입력을 시작할 수 없어요.", IS_IOS && IS_STANDALONE ? 6000 : undefined); }
 }
 
 /* ---- 발음 코치 ---- */
@@ -850,6 +866,7 @@ function stopVoice(){ try { if (V.tts) V.tts.stop().catch(()=>{}); speechSynthes
 function openScenario(id){
   const s = SCENARIOS.find(x=>x.id===id);
   if (isLocked(s)) return showPremium();
+  resetListening();
   run = {s, i:0, results:s.turns.map(()=>({score:0, answer:"", tried:false})), peeked:false, waiting:false};
   touchStreak();
   renderChat();
@@ -870,6 +887,7 @@ function renderChat(){
       <div class="mission"><p><b>미션</b><span id="mis"></span></p>
         <span class="side"><button class="mini" id="peek">모범답안</button><button class="mini" id="skip">건너뛰기</button></span></div>
       <div id="peekbox" class="peek" hidden></div>
+      <div id="michelp" class="peek" hidden>마이크가 안 되면: 입력칸을 누르고 키보드의 🎤(받아쓰기)로 말한 뒤 ➤를 누르세요. 막히면 <b>모범답안</b>을 보고 따라 말하거나 <b>건너뛰기</b>로 넘어갈 수 있어요.</div>
       <div class="inrow">
         <button class="iconbtn mic" id="mic" aria-label="말해서 입력하기">${ICON.mic}</button>
         <textarea id="ta" rows="1" placeholder="영어로 답해 보세요" autocomplete="off" autocapitalize="sentences" spellcheck="false"></textarea>
@@ -881,11 +899,18 @@ function renderChat(){
   document.getElementById("back").onclick = renderHome;
   document.getElementById("opt").onclick = showVoiceOpts;
   document.getElementById("send").onclick = submit;
-  document.getElementById("mic").onclick = e => listen(e.currentTarget, {onText: t => { ta.value = t; }});
+  document.getElementById("mic").onclick = e => startAnswerMic(e.currentTarget);
   document.getElementById("peek").onclick = peek;
   document.getElementById("skip").onclick = () => { if (!run.waiting) nextTurn(); };
   ta.addEventListener("keydown", e => { if (e.key === "Enter" && !e.shiftKey && !e.isComposing){ e.preventDefault(); submit(); } });
   ta.addEventListener("input", () => { ta.style.height = "auto"; ta.style.height = Math.min(ta.scrollHeight, 120) + "px"; });
+}
+// 대화에서 말로 대답: 말이 끝나 글자가 잡히면 바로 채점(보내기)까지 진행
+function startAnswerMic(btn){
+  const ta = document.getElementById("ta"); if (!btn || !ta || !run) return;
+  const turn = run.i, sub = run.sub || 0, cur = run;
+  listen(btn, {onText: t => { ta.value = t; },
+    onDone: text => { if (text && run === cur && run.i === turn && (run.sub || 0) === sub && !run.waiting && document.getElementById("ta") === ta){ ta.value = text; submit(); } }});
 }
 function showVoiceOpts(){
   const useClaude = !!V.tts;
@@ -951,6 +976,7 @@ function submit(){
   if (run.waiting || run.i >= run.s.turns.length) return;
   const ta = document.getElementById("ta"); const raw = ta.value.trim();
   if (!raw) return toast("영어로 답을 입력하거나 마이크로 말해 주세요.");
+  run.sub = (run.sub || 0) + 1;
   if (listening) listening.stop();
   const t = run.s.turns[run.i];
   addHtml(`<div class="msg me"><div class="bub"><div class="en">${esc(raw)}</div></div></div>`);
@@ -976,12 +1002,15 @@ function submit(){
   </div>`);
   el.querySelector('[data-a="spk"]').onclick = () => speak(r.best);
   el.querySelector('[data-a="pr"]').onclick = () => openPron(r.best, sc => { cur.pron = Math.max(cur.pron || 0, sc); });
-  el.querySelector('[data-a="again"]').onclick = () => { ta.focus(); };
+  el.querySelector('[data-a="again"]').onclick = () => { const m = document.getElementById("mic");
+    if ((SR || V.dict || nativeSpeech()) && micFails === 0 && m && !listening) startAnswerMic(m); else ta.focus(); };
   el.querySelector('[data-a="next"]').onclick = e => { e.currentTarget.disabled = true; nextTurn(); };
 }
 function nextTurn(){
   if (run.waiting) return;
   run.waiting = true;
+  if (listening) resetListening();
+  document.querySelectorAll('.fb [data-a="next"]').forEach(b => b.disabled = true);
   run.i++;
   document.getElementById("ta").disabled = true;
   if (run.i >= run.s.turns.length){ document.getElementById("pbar").style.width = "100%"; setTimeout(finish, 400); return; }
